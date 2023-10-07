@@ -12,6 +12,7 @@
 /* eslint-disable max-classes-per-file */
 /* eslint-disable no-param-reassign */
 
+import { workspace } from 'vscode';
 import {
     AttachRequestArguments,
     FrameReference,
@@ -386,6 +387,16 @@ export class VariableObjectStore {
             return;
         }
 
+        const explicitThreadSwitch = workspace.getConfiguration('nsight-vscode-edition').get('cuda-gdb.explicit-thread-switch', false);
+        if (explicitThreadSwitch) {
+            if (VariableObjectStore.isCudaFocus(threadId)) {
+                await this.gdb.sendCommand(utils.formatSetFocusCommand(threadId));
+                await this.gdb.sendCommand(`frame ${frameId}`);
+            } else {
+                await this.gdb.sendCommands([`thread ${threadId}`, `frame ${frameId}`]);
+            }
+        }
+
         let shouldInvalidate = false;
         if (this.threadIdChanged(threadId) || this.execContext.frameId !== frameId) {
             shouldInvalidate = true;
@@ -401,8 +412,7 @@ export class VariableObjectStore {
         }
 
         let getStackVarsCommand = '-stack-list-variables';
-
-        if (!VariableObjectStore.isCudaFocus(threadId)) {
+        if (!explicitThreadSwitch && !VariableObjectStore.isCudaFocus(threadId)) {
             // Here, we need to add the thread and frame IDs but a bug in cuda-gdb currently prevents this.
             getStackVarsCommand += ` --thread ${threadId} --frame ${frameId}`;
         }
@@ -1593,7 +1603,7 @@ export class CudaGdbSession extends GDBDebugSession {
                 this.sendResponse(response);
 
                 this.sendEvent(new ChangedCudaFocusEvent(newFocus));
-                this.sendEvent(new InvalidatedEvent(['variables']));
+                this.sendEvent(new InvalidatedEvent(['stackFrames', 'variables'], this.cudaThread.id));
             }
         } catch (error) {
             this.sendErrorResponse(response, 1, (error as Error).message);

@@ -44,6 +44,17 @@
     ],
     "main": "./dist/extension",
     "contributes": {
+        "configuration": {
+            "title": "Nsight Visual Studio Code Edition",
+            "properties": {
+                "nsight-vscode-edition.cuda-gdb.explicit-thread-switch": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Perform an explicit thread switch within cuda-gdb whenever the debugger queries for local variables."
+                }
+
+            }
+        },
         "taskDefinitions": [
             {
                 "type": "shell",
