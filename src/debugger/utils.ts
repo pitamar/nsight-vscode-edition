@@ -268,6 +268,7 @@ export function formatSetFocusCommand(focus?: types.CudaFocus): string {
     let setFocusCommand = 'cuda';
 
     if (focus.type === 'software') {
+        console.assert(focus.blockIdx !== undefined && focus.threadIdx !== undefined);
         const setBlockCommand = formatSetDimCommand('block', focus.blockIdx);
         const setThreadCommand = formatSetDimCommand('thread', focus.threadIdx);
         setFocusCommand += ` ${setBlockCommand} ${setThreadCommand}`;
@@ -347,4 +348,10 @@ export async function readOsInfo(): Promise<types.OsInfo> {
     }
 
     return osInfo;
+}
+
+
+export function deepEqual(a: any, b: any): boolean {
+    const result = JSON.stringify(a) === JSON.stringify(b);
+    return result;
 }

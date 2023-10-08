@@ -12,7 +12,7 @@
 /* eslint-disable max-classes-per-file */
 /* eslint-disable no-param-reassign */
 
-import { workspace } from 'vscode';
+import * as vscode from 'vscode';
 import {
     AttachRequestArguments,
     FrameReference,
@@ -50,6 +50,7 @@ import { deviceRegisterGroups } from './deviceRegisterGroups.json';
 import * as types from './types';
 import * as utils from './utils';
 
+console.log(vscode);
 const exec = util.promisify(require('child_process').exec);
 
 abstract class Adapter {
@@ -91,8 +92,10 @@ class CudaThread extends Thread {
         this.focus = undefined;
     }
 
+    // eslint-disable-next-line class-methods-use-this
     get hasFocus(): boolean {
-        return utils.isCudaFocusValid(this.focus);
+        return false;
+        // return utils.isCudaFocusValid(this.focus);
     }
 }
 
@@ -183,6 +186,39 @@ interface MICudaInfoDevicesResponse {
             sm_type: string;
         }>;
     };
+}
+
+module ExecutionQueue {
+    export type Fn<T = any> = () => T;
+    export type ResolveFn<T = any> = (value: T) => void;
+    export type RejectFn<T = any> = (error: any) => void;
+}
+
+export class ExecutionQueue {
+    protected queue: Array<[ExecutionQueue.Fn, ExecutionQueue.ResolveFn, ExecutionQueue.RejectFn]> = [];
+
+    protected async processQueue(): Promise<void> {
+        for (const [fn, resolve, reject] of this.queue) {
+            try {
+                const result = await fn();
+                resolve(result);
+            } catch (e: any) {
+                reject(e);
+            }
+        }
+        this.queue = [];
+    }
+
+    public async execute<T>(fn: ExecutionQueue.Fn<T>): Promise<T> {
+        const promise = new Promise<T>((resolve, reject) => {
+            this.queue.push([fn, resolve, reject]);
+            if (this.queue.length === 1) {
+                this.processQueue();
+            }
+        });
+        const result = await promise;
+        return result;
+    }
 }
 
 export class CudaGdbBackend extends GDBBackend {
@@ -339,14 +375,14 @@ export class VariableObjectStore {
         }
     }
 
-    async getLocals(threadId: number | types.CudaFocus | undefined, frameId: number): Promise<SimplifiedVarObjType[]> {
-        if (threadId === undefined) {
+    async getLocals(focus: number | types.CudaFocus | undefined, frameId: number): Promise<SimplifiedVarObjType[]> {
+        if (focus === undefined) {
             return [];
         }
 
-        const funcName = await this.getCurrentFunction(threadId);
+        const funcName = await this.getCurrentFunction(focus);
 
-        await this.validate(threadId, frameId, funcName);
+        await this.validate(focus, frameId, funcName);
 
         return [...this.byName.values()].filter((vo) => vo.kind === 'local');
     }
@@ -387,16 +423,6 @@ export class VariableObjectStore {
             return;
         }
 
-        const explicitThreadSwitch = workspace.getConfiguration('nsight-vscode-edition').get('cuda-gdb.explicit-thread-switch', false);
-        if (explicitThreadSwitch) {
-            if (VariableObjectStore.isCudaFocus(threadId)) {
-                await this.gdb.sendCommand(utils.formatSetFocusCommand(threadId));
-                await this.gdb.sendCommand(`frame ${frameId}`);
-            } else {
-                await this.gdb.sendCommands([`thread ${threadId}`, `frame ${frameId}`]);
-            }
-        }
-
         let shouldInvalidate = false;
         if (this.threadIdChanged(threadId) || this.execContext.frameId !== frameId) {
             shouldInvalidate = true;
@@ -412,7 +438,7 @@ export class VariableObjectStore {
         }
 
         let getStackVarsCommand = '-stack-list-variables';
-        if (!explicitThreadSwitch && !VariableObjectStore.isCudaFocus(threadId)) {
+        if (!VariableObjectStore.isCudaFocus(threadId)) {
             // Here, we need to add the thread and frame IDs but a bug in cuda-gdb currently prevents this.
             getStackVarsCommand += ` --thread ${threadId} --frame ${frameId}`;
         }
@@ -456,11 +482,11 @@ export class VariableObjectStore {
         }
     }
 
-    static isCudaFocus(threadId: number | types.CudaFocus): threadId is types.CudaFocus {
+    static isCudaFocus(threadId?: number | types.CudaFocus): threadId is types.CudaFocus {
         // Note that we are not calling type but rather
         // checking if the member exists on threadId i.e.
         // whether threadId is a CudaFocus object:
-        return (threadId as types.CudaFocus).type !== undefined;
+        return (threadId as types.CudaFocus)?.type !== undefined;
     }
 
     protected threadIdChanged(threadId: number | types.CudaFocus): boolean {
@@ -483,7 +509,7 @@ export class VariableObjectStore {
             return true;
         }
 
-        return utils.equalsCudaFocus(threadId, this.execContext.threadId);
+        return !utils.equalsCudaFocus(threadId, this.execContext.threadId);
     }
 
     protected async createLocals(stackLocalsList: MIVariableInfo[]): Promise<void> {
@@ -541,6 +567,30 @@ export class VariableObjectStore {
     }
 }
 
+export class InvalidationCompleteTrigger {
+    private expectedRequests: Set<string>;
+
+    private onceComplete: () => (Promise<void> | void);
+
+    public constructor(
+        expectedRequests: Iterable<string>,
+        onceComplete: () => Promise<void> | void,
+    ){ 
+        this.expectedRequests = new Set(expectedRequests);
+        this.onceComplete = onceComplete;
+    }
+
+    public async resolve(request: string): Promise<boolean> {
+        const expected = this.expectedRequests.delete(request);
+        if (expected && this.expectedRequests.size === 0) {
+            await this.onceComplete();
+            return true;
+        }
+
+        return false;
+    }
+}
+
 export class CudaGdbSession extends GDBDebugSession {
     static readonly codeModuleNotFound: number = 127;
 
@@ -562,10 +612,111 @@ export class CudaGdbSession extends GDBDebugSession {
             }
         });
 
+        vscode.debug.onDidChangeStackFrameFocus(e => this.onDidChangeStackFrameFocus(e));
+
         return backend;
     }
 
+    protected executionQueue = new ExecutionQueue();
+
+    protected uiFocusedFrame?: types.RealizedFrameReference;
+
+    protected gdbFocusedFrame?: types.RealizedFrameReference;
+
+    protected invalidationCompleteTrigger?: InvalidationCompleteTrigger;
+
     protected varStore = new VariableObjectStore(this.gdb);
+
+    protected realizeFrameReference(): undefined;
+    protected realizeFrameReference(frame: undefined): undefined;
+    protected realizeFrameReference(frame: FrameReference): types.RealizedFrameReference;
+    protected realizeFrameReference(frame?: FrameReference): types.RealizedFrameReference | undefined {
+        if (frame === undefined) {
+            return frame;
+        }
+
+        const result: types.RealizedFrameReference = {
+            frameId: frame.frameId,
+            focus: (
+                frame.threadId === undefined ?
+                this.cudaThread.focus :
+                frame.threadId
+            ),
+        };
+
+        return result;
+    }
+
+    // eslint-disable-next-line class-methods-use-this
+    protected async onDidChangeStackFrameFocus(e?: vscode.ThreadFocus | vscode.StackFrameFocus): Promise<void> {
+        await this.executionQueue.execute(async () => {
+            if (e === undefined || e.threadId === undefined || !('frameId' in e) || e.frameId === undefined) {
+                return;
+            }
+
+            const frame = this.frameHandles.get(e.frameId);
+            const realizedFrame = this.realizeFrameReference(frame);
+            this.uiFocusedFrame = realizedFrame;
+
+            if (realizedFrame === undefined) {
+                return;
+            }
+
+            const explicitThreadSwitch = vscode.workspace.getConfiguration('nsight-vscode-edition').get('cuda-gdb.explicit-thread-switch', false);
+            if (explicitThreadSwitch) {
+                await this.focusOnFrame(realizedFrame);
+            }
+        })
+    }
+
+    protected async focusOnThread(focus?: number | types.CudaFocus): Promise<void> {
+        await this.focusOnFrame({focus, frameId: 0});
+    }
+
+    protected async focusOnFrame(frame?: types.RealizedFrameReference): Promise<void> {
+        if (frame === undefined) {
+            return;
+        }
+
+        if (utils.deepEqual(frame, this.gdbFocusedFrame)) {
+            return;
+        }
+
+        const { frameId } = frame;
+        const focus = frame.focus ?? this.cudaThread.focus;
+
+        if (focus === undefined) {
+            return;
+        }
+
+        const commands: string[] = []
+
+        if (!utils.deepEqual(focus, this.gdbFocusedFrame?.focus)) {
+            if (VariableObjectStore.isCudaFocus(focus)) {
+                commands.push(utils.formatSetFocusCommand(focus));
+            } else {
+                commands.push(`thread ${focus}`);
+            }
+
+            if (frameId !== null) {
+                commands.push(`frame ${frameId}`);
+            }
+        } else if (frameId !== null && !utils.deepEqual(frameId, this.gdbFocusedFrame?.frameId)) {
+            commands.push(`frame ${frameId}`);
+        }
+
+        try {
+            if (commands.length > 0) {
+                await this.gdb.sendCommands(commands);
+            }
+            this.gdbFocusedFrame = { frameId, focus }
+        } catch(e) {
+            const gdbFocusedFrame = this.gdbFocusedFrame;
+            this.gdbFocusedFrame = undefined;
+            await this.focusOnFrame(gdbFocusedFrame);
+            throw e;
+        }
+    }
 
     public start(inStream: NodeJS.ReadableStream, outStream: NodeJS.WritableStream): void {
         // Defined for debugging
@@ -619,19 +770,25 @@ export class CudaGdbSession extends GDBDebugSession {
     }
 
     protected customRequest(command: string, response: DebugProtocol.Response, args: any): void {
-        switch (command) {
-            case CudaDebugProtocol.Request.changeCudaFocus:
-                this.changeCudaFocusRequest(response as CudaDebugProtocol.ChangeCudaFocusResponse, args);
-                break;
+        this.executionQueue.execute(async () => {
+            switch (command) {
+                case CudaDebugProtocol.Request.changeCudaFocus:
+                    await this.changeCudaFocusRequest(response as CudaDebugProtocol.ChangeCudaFocusResponse, args);
+                    break;
 
-            case CudaDebugProtocol.Request.systemInfo:
-                this.systemInfoRequest(response as CudaDebugProtocol.SystemInfoResponse);
-                break;
+                case CudaDebugProtocol.Request.resetSelectedFocus:
+                    await this.resetSelectedFocusRequest(response as CudaDebugProtocol.ResetFocusResponse, args);
+                    break;
 
-            default:
-                super.customRequest(command, response, args);
-                break;
-        }
+                case CudaDebugProtocol.Request.systemInfo:
+                    await this.systemInfoRequest(response as CudaDebugProtocol.SystemInfoResponse);
+                    break;
+
+                default:
+                    await super.customRequest(command, response, args);
+                    break;
+            }
+        });
     }
 
     protected async launchRequest(response: DebugProtocol.LaunchResponse, args: CudaLaunchRequestArguments): Promise<void> {
@@ -1160,12 +1317,27 @@ export class CudaGdbSession extends GDBDebugSession {
         this.sendResponse(response);
     }
 
-    protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): Promise<void> {
-        await super.stackTraceRequest(response, args);
+    protected getFrameFromHandle(frameHandle: number): FrameReference | undefined {
+        const frame = this.frameHandles.get(frameHandle);
+        return frame;
+    }
 
-        if (this.cudaThread.hasFocus && args.threadId !== undefined) {
-            await this.resetCudaFocus();
-        }
+    protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): Promise<void> {
+        await this.executionQueue.execute(async () => {
+            try {
+                await this.focusOnThread(args.threadId ?? this.cudaThread.focus);
+                await super.stackTraceRequest(response, args);
+
+                if (this.cudaThread.hasFocus && args.threadId !== undefined) {
+                    await this.resetCudaFocus();
+                }
+
+                await this.focusOnFrame(this.uiFocusedFrame);
+                // await this.invalidationCompleteTrigger?.resolve('stacks');
+            } catch (error) {
+                this.sendErrorResponse(response, 1, (error as Error).message);
+            }
+        })
     }
 
     // This function has been borrowed from CDT's implementation with a slight
@@ -1176,47 +1348,49 @@ export class CudaGdbSession extends GDBDebugSession {
     }
 
     protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
-        const variables = new Array<DebugProtocol.Variable>();
-
-        response.body = {
-            variables
-        };
-
         try {
-            const frameOrObjectRef = this.variableHandles.get(args.variablesReference);
+            await this.executionQueue.execute(async () => {
+                const variables = new Array<DebugProtocol.Variable>();
+                response.body = {variables};
 
-            if (!frameOrObjectRef) {
-                this.sendResponse(response);
-                return;
-            }
+                const frameOrObjectRef = this.variableHandles.get(args.variablesReference);
 
-            if (frameOrObjectRef.type === 'frame') {
-                const ref = frameOrObjectRef as RegistersVariableReference;
+                if (!frameOrObjectRef) {
+                    this.sendResponse(response);
+                    return;
+                }
 
-                if (ref?.scope === 'registers') {
-                    await this.registersRequest(response, args, ref);
+                if (frameOrObjectRef.type === 'frame') {
+                    const ref = frameOrObjectRef as RegistersVariableReference;
+                    const frameRef: FrameReference = this.frameHandles.get(ref.frameHandle);
+                    const realizedFrame = this.realizeFrameReference(frameRef);
+
+                    await this.focusOnFrame(realizedFrame);
+
+                    if (ref?.scope === 'registers') {
+                        await this.registersRequest(response, args, ref);
+                    } else {
+                        await this.localsRequest(response, args, frameOrObjectRef);
+                    }
+
+                    await this.focusOnFrame(this.uiFocusedFrame);
                 } else {
-                    await this.localsRequest(response, args, frameOrObjectRef);
+                    const ref = frameOrObjectRef as ContainerObjectReference;
+
+                    await this.populateChildren(ref);
+
+                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                    response.body.variables = ref.children!.map((child) => {
+                        const variableReference = typeof child.reference === 'number' ? child.reference : 0;
+                        return new Variable(child.name, child.value, variableReference);
+                    });
+
+                    this.sendResponse(response);
                 }
-
-                const frame: FrameReference = this.frameHandles.get(ref.frameHandle);
-                if (frame?.threadId && this.cudaThread.hasFocus) {
-                    await this.resetCudaFocus();
-                }
-            } else {
-                const ref = frameOrObjectRef as ContainerObjectReference;
-
-                await this.populateChildren(ref);
-
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                response.body.variables = ref.children!.map((child) => {
-                    const variableReference = typeof child.reference === 'number' ? child.reference : 0;
-                    return new Variable(child.name, child.value, variableReference);
-                });
-
-                this.sendResponse(response);
-            }
+            });
+            // await this.invalidationCompleteTrigger?.resolve('variables');
         } catch (error) {
+            response.body = {variables: []};
             this.sendErrorResponse(response, 1, (error as Error).message);
         }
     }
@@ -1394,12 +1568,17 @@ export class CudaGdbSession extends GDBDebugSession {
     protected async localsRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments, ref: FrameVariableReference): Promise<void> {
         response.body.variables = [];
 
-        const frame = this.frameHandles.get(ref.frameHandle);
-        if (!frame) {
+        const frameRef = this.frameHandles.get(ref.frameHandle);
+        const realizedFrame = this.realizeFrameReference(frameRef);
+        if (!realizedFrame) {
             return;
         }
 
-        const stackVarObjects = await this.varStore.getLocals(frame.threadId || this.cudaThread.focus, frame.frameId);
+        const stackVarObjects = await this.varStore.getLocals(
+            realizedFrame.focus,
+            frameRef.frameId,
+        );
+        
         response.body.variables = stackVarObjects.map(
             (vo) =>
                 new Variable(
@@ -1409,7 +1588,7 @@ export class CudaGdbSession extends GDBDebugSession {
                         ? 0
                         : this.variableHandles.create({
                               type: 'object',
-                              frameHandle: frame.frameId,
+                              frameHandle: frameRef.frameId,
                               varobjName: vo.varname
                           })
                 )
@@ -1565,8 +1744,8 @@ export class CudaGdbSession extends GDBDebugSession {
         try {
             const typedArgs: CudaDebugProtocol.ChangeCudaFocusArguments = args as CudaDebugProtocol.ChangeCudaFocusArguments;
             const focus: types.CudaFocus = typedArgs.focus as types.CudaFocus;
-            const setFocusCommand: string = utils.formatSetFocusCommand(focus);
-            await this.gdb.sendCommand(setFocusCommand);
+
+            await this.focusOnThread(focus);
 
             if (!response.body) {
                 response.body = {};
@@ -1598,17 +1777,33 @@ export class CudaGdbSession extends GDBDebugSession {
 
             if (newFocus) {
                 this.cudaThread.setFocus(newFocus);
+                if (this.uiFocusedFrame && VariableObjectStore.isCudaFocus(this.uiFocusedFrame?.focus)) {
+                    this.uiFocusedFrame = { focus: newFocus, frameId: 0 }
+                }
 
                 response.body.focus = newFocus;
                 this.sendResponse(response);
 
                 this.sendEvent(new ChangedCudaFocusEvent(newFocus));
-                this.sendEvent(new InvalidatedEvent(['stackFrames', 'variables'], this.cudaThread.id));
+
+                const invalidatedAreas: DebugProtocol.InvalidatedAreas[] = ['stacks', 'variables'];
+
+                this.sendEvent(new InvalidatedEvent(invalidatedAreas, this.cudaThread.id));
             }
+        } catch (error) {
+            this.sendErrorResponse(response, 1, (error as Error).message);
+            await this.focusOnFrame(this.uiFocusedFrame);
+        }
+    }
+
+    private async resetSelectedFocusRequest(response: CudaDebugProtocol.ResetFocusResponse, args: any): Promise<void> {
+        try {
+            await this.focusOnFrame(this.uiFocusedFrame);
         } catch (error) {
             this.sendErrorResponse(response, 1, (error as Error).message);
         }
     }
+
 
     private async systemInfoRequest(response: CudaDebugProtocol.SystemInfoResponse): Promise<void> {
         const osInfo: types.OsInfo = await utils.readOsInfo();

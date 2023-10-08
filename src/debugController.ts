@@ -146,6 +146,8 @@ class CudaDebugAdapterTracker implements vscode.DebugAdapterTracker {
 class CudaDebugController implements vscode.Disposable, vscode.DebugAdapterTrackerFactory {
     private focusStatusBarItem: vscode.StatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right);
 
+    private focusInput?: string = undefined;
+
     private debuggerMode: DebuggerMode = DebuggerMode.design;
 
     telemetry: TelemetryService;
@@ -176,6 +178,13 @@ class CudaDebugController implements vscode.Disposable, vscode.DebugAdapterTrack
     }
 
     setDebugFocus(focus?: types.CudaFocus): void {
+        if (focus && 'threadIdx' in focus) {
+            if (focus.blockIdx && focus.threadIdx) {
+                const block = utils.formatSetDimCommand('block', focus.blockIdx);
+                const thread = utils.formatSetDimCommand('thread', focus.threadIdx);
+                this.focusInput = `${block} ${thread}`
+            }
+        }
         const formattedFocus: string = utils.formatCudaFocus(focus);
         this.focusStatusBarItem.text = formattedFocus;
     }
@@ -191,8 +200,8 @@ class CudaDebugController implements vscode.Disposable, vscode.DebugAdapterTrack
 
             const newDebugFocus: string | undefined = await vscode.window.showInputBox({
                 ignoreFocusOut: true,
-                placeHolder: 'Set debug focus: block (?, ?, ?) thread (?, ?, ?)',
-                prompt: '',
+                value: this.focusInput,
+                prompt: 'Set debug focus: block (?, ?, ?) thread (?, ?, ?)',
                 validateInput(value: string): string | undefined | null | Thenable<string | undefined | null> {
                     // Validate that focus is set with the expected syntax
                     return '';
@@ -205,7 +214,7 @@ class CudaDebugController implements vscode.Disposable, vscode.DebugAdapterTrack
             }
 
             const typedDebugFocus: types.CudaFocus | undefined = utils.parseCudaSwFocus(newDebugFocus);
-            if (!typedDebugFocus) {
+            if (!typedDebugFocus?.blockIdx || !typedDebugFocus?.threadIdx) {
                 tracker.cancel('input invalid');
                 vscode.window.showWarningMessage('No block or thread was specified to switch the CUDA debug focus to.');
             } else {

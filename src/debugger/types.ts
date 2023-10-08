@@ -30,6 +30,12 @@ export interface CudaHwFocus {
 
 export type CudaFocus = CudaSwFocus | CudaHwFocus;
 
+export interface RealizedFrameReference {
+    focus?: number | CudaFocus;
+    frameId?: number;
+    threadId?: never;
+};
+
 export interface OsInfo {
     platform?: string;
 

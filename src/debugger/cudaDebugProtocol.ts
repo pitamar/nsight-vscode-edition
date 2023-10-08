@@ -18,6 +18,8 @@ export namespace CudaDebugProtocol {
     export abstract class Request {
         static readonly changeCudaFocus: string = 'changeCudaFocus';
 
+        static readonly resetSelectedFocus: string = 'resetSelectedFocus';
+
         static readonly systemInfo: string = 'systemInfo';
     }
 
@@ -39,6 +41,9 @@ export namespace CudaDebugProtocol {
             focus?: types.CudaFocus;
         };
     }
+
+    // eslint-disable-next-line @typescript-eslint/no-empty-interface
+    export interface ResetFocusResponse extends DebugProtocol.Response { }
 
     export interface ChangedCudaFocusEvent extends DebugProtocol.Event {
         // event: 'changedCudaFocus' (Event.changedCudaFocus)
