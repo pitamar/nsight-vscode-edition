@@ -147,6 +147,11 @@
                                 "description": "Command-line arguments to pass to the debuggee.",
                                 "default": ""
                             },
+                            "cudaCoreDumpPath": {
+                                "type": "string",
+                                "description": "Path to a cuda core dump file",
+                                "default": ""
+                            },
                             "verboseLogging": {
                                 "type": "boolean",
                                 "description": "Produce verbose log output.",

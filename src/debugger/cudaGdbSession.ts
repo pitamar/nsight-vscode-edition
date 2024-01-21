@@ -153,6 +153,7 @@ export interface CudaLaunchRequestArguments extends LaunchRequestArguments {
     onAPIError?: APIErrorOption;
     envFile?: string;
     stopAtEntry?: boolean;
+    cudaCoreDumpPath?: string;
     sysroot?: string;
     additionalSOLibSearchPath?: string;
     environment?: Environment[];
@@ -224,7 +225,10 @@ export class ExecutionQueue {
 export class CudaGdbBackend extends GDBBackend {
     static readonly eventCudaGdbExit: string = 'cudaGdbExit';
 
-    sendCommand<T>(command: string): Promise<T> {
+    public sendCommand<T>(command: string, returnRaw?: false): Promise<T>;
+    public sendCommand<T>(command: string, returnRaw: true): Promise<string>;
+    public sendCommand<T>(command: string, returnRaw: boolean): Promise<T | string>;
+    public sendCommand<T>(command: string, returnRaw: boolean = false): Promise<T | string> {
         const miPrefixBreakInsert = '-break-insert';
         if (command.startsWith(miPrefixBreakInsert)) {
             const breakInsert = command.slice(0, miPrefixBreakInsert.length);
@@ -232,7 +236,7 @@ export class CudaGdbBackend extends GDBBackend {
             const breakPointInfo = command.slice(miPrefixBreakInsert.length);
             command = `${breakInsert} ${flagF} ${breakPointInfo}`;
         }
-        return super.sendCommand(command);
+        return super.sendCommand(command, returnRaw);
     }
 
     async spawn(requestArgs: CudaLaunchRequestArguments | CudaAttachRequestArguments): Promise<void> {
@@ -575,7 +579,7 @@ export class InvalidationCompleteTrigger {
     public constructor(
         expectedRequests: Iterable<string>,
         onceComplete: () => Promise<void> | void,
-    ){ 
+    ){
         this.expectedRequests = new Set(expectedRequests);
         this.onceComplete = onceComplete;
     }
@@ -599,6 +603,7 @@ export class CudaGdbSession extends GDBDebugSession {
     protected clientInitArgs: DebugProtocol.InitializeRequestArguments | undefined;
 
     protected stopAtEntry = false;
+    protected cudaCoreDumpPath?: string;
 
     protected createBackend(): GDBBackend {
         const backend: CudaGdbBackend = new CudaGdbBackend();
@@ -817,6 +822,16 @@ export class CudaGdbSession extends GDBDebugSession {
         const cdtLaunchArgs: LaunchRequestArguments = { ...args };
 
         cdtLaunchArgs.gdb = args.debuggerPath;
+
+        this.cudaCoreDumpPath = args.cudaCoreDumpPath;
+
+        // if (this.cudaCoreDumpPath) {
+        //     this.gdb.setNonStopMode(false);
+        //     const resultData = {
+        //         'stopped-threads': 'all',
+        //     }
+        //     await this.handleGDBAsync('resultClass', resultData);
+        // }
 
         try {
             CudaGdbSession.configureLaunch(args, cdtLaunchArgs);
@@ -1103,6 +1118,28 @@ export class CudaGdbSession extends GDBDebugSession {
         try {
             if (this.isAttach) {
                 await sendExecContinue(this.gdb);
+            } else if (this.cudaCoreDumpPath) {
+                await this.gdb.sendCommand(`target cudacore ${this.cudaCoreDumpPath}`);
+                await this.sendStoppedEvent('entry', undefined as any, true)
+                // const myres = await this.gdb.sendCommand(`cuda device sm warp lane block thread`);
+                const rawResult = await this.gdb.sendCommand(`-cuda-focus-query "device sm warp lane block thread"`, true);
+                const data = rawResult.replace(/^done,"/, "")
+                const blockIdx = utils.parseCudaDim(data, 'block');
+                const threadIdx = utils.parseCudaDim(data, 'thread');
+
+                const focus: types.CudaFocus = {
+                    type: 'software',
+                    blockIdx,
+                    threadIdx,
+                }
+                this.cudaThread.setFocus(focus);
+                await this.resetCudaFocus();
+                this.sendEvent(new ChangedCudaFocusEvent(this.cudaThread.focus));
+
+                // const miResponse: string = JSON.stringify(myres);
+                // console.log(miResponse);
+                // // this.sendEvent(new OutputEvent(miResponse));
+                // // this.sendResponse(response);
             } else if (this.stopAtEntry) {
                 await this.gdb.sendCommand('start');
             } else {
@@ -1114,7 +1151,7 @@ export class CudaGdbSession extends GDBDebugSession {
         }
     }
 
-    protected handleGDBAsync(resultClass: string, resultData: any): void {
+    protected async handleGDBAsync(resultClass: string, resultData: any): Promise<void> {
         if (resultClass === 'stopped') {
             // If the event originated from CUDA there is a CudaFocus field with:
             //
@@ -1147,7 +1184,7 @@ export class CudaGdbSession extends GDBDebugSession {
 
                 if (!utils.equalsCudaFocus(focus, this.cudaThread.focus)) {
                     this.cudaThread.setFocus(focus);
-                    this.resetCudaFocus();
+                    await this.resetCudaFocus();
 
                     this.sendEvent(new ChangedCudaFocusEvent(this.cudaThread.focus));
                 }
@@ -1163,7 +1200,7 @@ export class CudaGdbSession extends GDBDebugSession {
         super.handleGDBAsync(resultClass, resultData);
     }
 
-    protected handleGDBNotify(notifyClass: string, notifyData: any): void {
+    protected async handleGDBNotify(notifyClass: string, notifyData: any): Promise<void> {
         if (notifyClass === 'breakpoint-modified') {
             const miBreakpoint: MIBreakpointInfo = notifyData.bkpt as MIBreakpointInfo;
             this.updateBreakpointLocation(miBreakpoint);
@@ -1578,7 +1615,7 @@ export class CudaGdbSession extends GDBDebugSession {
             realizedFrame.focus,
             frameRef.frameId,
         );
-        
+
         response.body.variables = stackVarObjects.map(
             (vo) =>
                 new Variable(
