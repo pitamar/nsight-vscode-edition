@@ -49,7 +49,7 @@
             "properties": {
                 "nsight-vscode-edition.cuda-gdb.explicit-thread-switch": {
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "description": "Perform an explicit thread switch within cuda-gdb whenever the debugger queries for local variables."
                 }
             }
