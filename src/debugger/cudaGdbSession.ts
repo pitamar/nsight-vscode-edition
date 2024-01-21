@@ -671,6 +671,8 @@ export class CudaGdbSession extends GDBDebugSession {
             if (explicitThreadSwitch) {
                 await this.focusOnFrame(realizedFrame);
             }
+
+            await this.invalidateAreas(['variables']);
         })
     }
 
@@ -1777,6 +1779,10 @@ export class CudaGdbSession extends GDBDebugSession {
         this.sendResponse(response);
     }
 
+    private async invalidateAreas(areas: DebugProtocol.InvalidatedAreas[]): Promise<void> {
+        this.sendEvent(new InvalidatedEvent(areas, this.cudaThread.id));
+    }
+
     private async changeCudaFocusRequest(response: CudaDebugProtocol.ChangeCudaFocusResponse, args: any): Promise<void> {
         try {
             const typedArgs: CudaDebugProtocol.ChangeCudaFocusArguments = args as CudaDebugProtocol.ChangeCudaFocusArguments;
@@ -1823,9 +1829,7 @@ export class CudaGdbSession extends GDBDebugSession {
 
                 this.sendEvent(new ChangedCudaFocusEvent(newFocus));
 
-                const invalidatedAreas: DebugProtocol.InvalidatedAreas[] = ['stacks', 'variables'];
-
-                this.sendEvent(new InvalidatedEvent(invalidatedAreas, this.cudaThread.id));
+                await this.invalidateAreas(['stacks', 'variables'])
             }
         } catch (error) {
             this.sendErrorResponse(response, 1, (error as Error).message);
