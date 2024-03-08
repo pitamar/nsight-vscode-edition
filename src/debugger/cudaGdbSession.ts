@@ -617,7 +617,7 @@ export class CudaGdbSession extends GDBDebugSession {
             }
         });
 
-        vscode.debug.onDidChangeStackFrameFocus(e => this.onDidChangeStackFrameFocus(e));
+        vscode.debug.onDidChangeActiveStackItem(e => this.onDidChangeActiveStackItem(e));
 
         return backend;
     }
@@ -653,7 +653,7 @@ export class CudaGdbSession extends GDBDebugSession {
     }
 
     // eslint-disable-next-line class-methods-use-this
-    protected async onDidChangeStackFrameFocus(e?: vscode.ThreadFocus | vscode.StackFrameFocus): Promise<void> {
+    protected async onDidChangeActiveStackItem(e?: vscode.Thread | vscode.StackFrame): Promise<void> {
         await this.executionQueue.execute(async () => {
             if (e === undefined || e.threadId === undefined || !('frameId' in e) || e.frameId === undefined) {
                 return;
