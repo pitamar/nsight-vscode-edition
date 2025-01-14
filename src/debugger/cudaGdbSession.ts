@@ -189,30 +189,36 @@ interface MICudaInfoDevicesResponse {
     };
 }
 
-module ExecutionQueue {
+// eslint-disable-next-line @typescript-eslint/no-namespace
+declare namespace ExecutionQueue {
     export type Fn<T = any> = () => T;
     export type ResolveFn<T = any> = (value: T) => void;
     export type RejectFn<T = any> = (error: any) => void;
+    export type Item = { fn: ExecutionQueue.Fn; resolve: ExecutionQueue.ResolveFn; reject: ExecutionQueue.RejectFn };
 }
 
+// eslint-disable-next-line no-redeclare
 export class ExecutionQueue {
-    protected queue: Array<[ExecutionQueue.Fn, ExecutionQueue.ResolveFn, ExecutionQueue.RejectFn]> = [];
+    protected queue: Array<ExecutionQueue.Item> = [];
 
     protected async processQueue(): Promise<void> {
-        for (const [fn, resolve, reject] of this.queue) {
+        // eslint-disable-next-line no-restricted-syntax,no-shadow
+        for (const { fn, resolve, reject } of this.queue) {
             try {
+                // eslint-disable-next-line no-await-in-loop
                 const result = await fn();
                 resolve(result);
-            } catch (e: any) {
-                reject(e);
+            } catch (error: any) {
+                reject(error);
             }
         }
         this.queue = [];
     }
 
     public async execute<T>(fn: ExecutionQueue.Fn<T>): Promise<T> {
+        // eslint-disable-next-line no-shadow
         const promise = new Promise<T>((resolve, reject) => {
-            this.queue.push([fn, resolve, reject]);
+            this.queue.push({ fn, resolve, reject });
             if (this.queue.length === 1) {
                 this.processQueue();
             }
@@ -226,9 +232,12 @@ export class CudaGdbBackend extends GDBBackend {
     static readonly eventCudaGdbExit: string = 'cudaGdbExit';
 
     public sendCommand<T>(command: string, returnRaw?: false): Promise<T>;
+
     public sendCommand<T>(command: string, returnRaw: true): Promise<string>;
+
     public sendCommand<T>(command: string, returnRaw: boolean): Promise<T | string>;
-    public sendCommand<T>(command: string, returnRaw: boolean = false): Promise<T | string> {
+
+    public sendCommand<T>(command: string, returnRaw = false): Promise<T | string> {
         const miPrefixBreakInsert = '-break-insert';
         if (command.startsWith(miPrefixBreakInsert)) {
             const breakInsert = command.slice(0, miPrefixBreakInsert.length);
@@ -600,6 +609,7 @@ export class CudaGdbSession extends GDBDebugSession {
     protected clientInitArgs: DebugProtocol.InitializeRequestArguments | undefined;
 
     protected stopAtEntry = false;
+
     protected cudaCoreDumpPath?: string;
 
     protected createBackend(): GDBBackend {
@@ -630,8 +640,11 @@ export class CudaGdbSession extends GDBDebugSession {
     protected varStore = new VariableObjectStore(this.gdb);
 
     protected realizeFrameReference(): undefined;
+
     protected realizeFrameReference(frame: undefined): undefined;
+
     protected realizeFrameReference(frame: FrameReference): types.RealizedFrameReference;
+
     protected realizeFrameReference(frame?: FrameReference): types.RealizedFrameReference | undefined {
         if (frame === undefined) {
             return frame;
@@ -710,11 +723,11 @@ export class CudaGdbSession extends GDBDebugSession {
                 await this.gdb.sendCommands(commands);
             }
             this.gdbFocusedFrame = { frameId, focus };
-        } catch (e) {
-            const gdbFocusedFrame = this.gdbFocusedFrame;
+        } catch (error) {
+            const { gdbFocusedFrame } = this;
             this.gdbFocusedFrame = undefined;
             await this.focusOnFrame(gdbFocusedFrame);
-            throw e;
+            throw error;
         }
     }
 

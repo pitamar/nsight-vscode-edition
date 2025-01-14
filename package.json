@@ -1,13 +1,13 @@
 {
     "name": "nsight-vscode-edition",
-    "version": "2023.2.0",
+    "version": "2024.1.13",
     "displayName": "Nsight Visual Studio Code Edition",
     "description": "CUDA development and debugging support for VS Code",
     "publisher": "pitamar",
     "icon": "nsight-128.png",
     "readme": "README.md",
     "author": {
-        "name": "NVIDIA"
+        "name": "pitamar"
     },
     "engines": {
         "vscode": "^1.96.0"
@@ -737,7 +737,7 @@
                         "label": "CUDA QNX GDB Server: Launch",
                         "description": "Launch a CUDA program in debug mode",
                         "body": {
-                            "name": "CUDA GDB Server: Launch",
+                            "name": "CUDA QNX GDB Server: Launch",
                             "type": "cuda-qnx-gdbserver",
                             "request": "launch",
                             "server": "cuda-gdbserver",
@@ -764,7 +764,7 @@
         "clean:tests": "gulp clean:tests",
         "watch": "webpack -c webpack.dev.js --watch --no-color",
         "webpack:prod": "webpack -c webpack.prod.js",
-        "package": "npm run prepare && gulp package",
+        "package": "npm run lint && npm run prepare && gulp package",
         "tsc": "npm run prepare && tsc -p ./",
         "pretest:no-webpack": "npm run tsc && npm run lint && gulp compile:test-programs",
         "test:no-webpack": "mocha --timeout 10000 out/test/*.test.js",
@@ -784,8 +784,8 @@
         "@types/uuid": "^8.3.4",
         "@types/vscode": "^1.96.0",
         "@types/which": "^2.0.1",
-        "@typescript-eslint/eslint-plugin": "^5.56.0",
-        "@typescript-eslint/parser": "^5.56.0",
+        "@typescript-eslint/eslint-plugin": "^2.30.0",
+        "@typescript-eslint/parser": "^2.30.0",
         "@vscode/debugadapter-testsupport": "^1.59.0",
         "@vscode/test-electron": "^2.3.0",
         "await-spawn": "^4.0.2",
@@ -807,7 +807,7 @@
         "gulp-sourcemaps": "^3.0.0",
         "gulp-typescript": "^6.0.0-alpha.1",
         "mocha": "^9.2.2",
-        "node-gyp": "^10.1.0",
+        "node-gyp": "^9.0.0",
         "node-loader": "^2.0.0",
         "prettier": "^2.2.1",
         "semver": "^7.3.5",
@@ -820,20 +820,14 @@
         "yargs": "^17.4.0",
         "yarn": "^1.22.19"
     },
-    "resolutions": {
-        "**/@typescript-eslint/eslint-plugin": "^5.56.0",
-        "**/@typescript-eslint/parser": "^5.56.0"
-    },
     "dependencies": {
         "@vscode/debugadapter": "^1.59.0",
         "@vscode/debugprotocol": "^1.59.0",
+        "axios": "^1.4.0",
         "cdt-gdb-adapter": "^0.0.19",
         "fs-extra": "^10.0.1",
         "universal-analytics": "^0.5.3",
         "uuid": "^8.3.2",
         "which": "^2.0.2"
-    },
-    "enabledApiProposals": [
-        "windowActivity"
-    ]
+    }
 }

@@ -43,7 +43,7 @@ export namespace CudaDebugProtocol {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-empty-interface
-    export interface ResetFocusResponse extends DebugProtocol.Response { }
+    export interface ResetFocusResponse extends DebugProtocol.Response {}
 
     export interface ChangedCudaFocusEvent extends DebugProtocol.Event {
         // event: 'changedCudaFocus' (Event.changedCudaFocus)
